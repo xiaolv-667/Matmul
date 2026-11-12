@@ -134,8 +134,6 @@ extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c)
         fp.dstStride = (N - BN) * 2 / 32;
         fp.reluEn = false;
         fp.quantPre = QuantMode_t::F322F16;   // 全局枚举，不在 AscendC 命名空间内
-        fp.reluEn = false;
-        fp.quantPre = QuantMode_t::F322F16;   // 全局枚举，不在 AscendC 命名空间内
         AscendC::Fixpipe(cGm[(mt * BM) * N + nt * BN], c1, fp);
 
         AscendC::SetFlag<AscendC::HardEvent::FIX_M>(EVENT_ID0);
