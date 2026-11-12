@@ -1,0 +1,23 @@
+# ---- 构建产物 ----
+build/
+out/
+ascendc_kernels_bbit
+*.o
+*.so
+*.a
+
+# ---- 实验数据（由 scripts/gen_data.py 生成）----
+input/
+output/
+
+# ---- profiling / 仿真日志 ----
+prof/
+msprof*/
+sim_log/
+CAMODEL_LOG_PATH/
+*.log
+
+# ---- 工具自身状态 ----
+.atomcode/
+.vscode/
+.idea/
