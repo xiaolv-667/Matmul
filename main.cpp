@@ -28,6 +28,15 @@ void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
     api.SetShape(1024, 1024, 1024);
     api.SetOrgShape(1024, 1024, 1024);
     api.SetBias(false);
+    // 注意：本 CANN 版本的 MatmulApiTiling 没有 SetDim / SetSingleShape /
+    // MultiCoreMatmulTiling，无法从 host 指定核数切分，生成器固定给单核
+    // （usedCoreNum=1, singleCoreM/N=1024）。多核需要换用带核间切分的 tiling 方案。
+    // 这里只打开 L1 的 A/B 双缓冲。
+    api.SetDoubleBuffer(true, true, false, false);
+    // 扫参结论：手动钉 base 尺寸反而更慢，交回生成器自动选择。
+    //   base=128/128/128（SetFixSplit 固定）: 237.6 us / 9.04 TFLOPS
+    //   base=128/256/64（生成器自动）      : 198.3 us / 10.83 TFLOPS
+    // api.SetFixSplit(128, 128, 128);
     api.GetTiling(tiling);
 }
 
