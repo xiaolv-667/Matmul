@@ -5,7 +5,7 @@
 
 #include <cstdlib>
 
-extern void matmul_v0_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *);
+extern void matmul_v2_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *);
 
 namespace {
 // 从环境变量读正整数，读不到或非法则用默认值
@@ -67,7 +67,7 @@ int32_t main(int32_t argc, char **argv)
     // 预热：首次 launch 会包含 kernel 库加载、UB/栈初始化等一次性开销，
     // 这些开销计入平均值会污染结果，尤其当 kernel 优化到 10us 量级时。
     for (int i = 0; i < warmup; ++i) {
-        matmul_v0_do(blockDim, stream, aDev, bDev, cDev);
+        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
     }
     CHECK_ACL(aclrtSynchronizeStream(stream));
 
@@ -76,7 +76,7 @@ int32_t main(int32_t argc, char **argv)
     // launch 开销算进去；连续发射再取平均可以把这部分摊薄。
     CHECK_ACL(aclrtRecordEvent(startEv, stream));
     for (int it = 0; it < repeat; ++it) {
-        matmul_v0_do(blockDim, stream, aDev, bDev, cDev);
+        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
     }
     CHECK_ACL(aclrtRecordEvent(endEv, stream));
     CHECK_ACL(aclrtSynchronizeStream(stream)); // 只同步一次
