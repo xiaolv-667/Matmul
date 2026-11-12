@@ -114,8 +114,13 @@ fro="${fro:-NA}"
 cos="${cos:-NA}"
 
 # ---- 版本标识 ----
+# results.md 是台账，每跑一次实验都会被追加一行，不能因为它把版本号标成 dirty，
+# 否则每一行数据都会带 -dirty，就失去了"追溯到某个 commit"的意义。
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    version=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+    version=$(git describe --tags --always 2>/dev/null || echo "unknown")
+    if [ -n "$(git status --porcelain -- . ':(exclude)results.md' 2>/dev/null)" ]; then
+        version="${version}-dirty"
+    fi
 else
     version="no-git"
 fi
