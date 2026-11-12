@@ -37,3 +37,4 @@
 | 2026-11-12 19:27 | v3-axpy-1-g6655bae-dirty | Ascend910B3/Release | 40 | 100 | 0.051693 | 41.5432 | nan | nan | **FAIL** |
 | 2026-11-12 19:28 | v3-axpy-1-g6655bae-dirty | Ascend910B3/Release | 40 | 100 | 1.479819 | 1.4512 | 0.000e+00 | 1.00000000 | PASS |
 | 2026-11-12 19:30 | v3-axpy-2-ga188eb0-dirty | Ascend910B3/Release | 40 | 100 | 1.479918 | 1.4511 | 0.000e+00 | 1.00000000 | PASS |
+| 2026-11-12 19:37 | v3-axpy-3-g4030e7e-dirty | Ascend910B3/Release | 40 | 100 | 1.479593 | 1.4514 | 0.000e+00 | 1.00000000 | PASS |

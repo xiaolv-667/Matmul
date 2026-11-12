@@ -5,7 +5,46 @@
 
 #include <cstdlib>
 
-extern void matmul_v2_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *);
+extern void matmul_v4_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
+
+namespace {
+// ---- 手工填 TCubeTiling ----
+// 字段顺序与 CANN kernel_tiling.h 的 TCubeTiling 一致（全部 int32）。
+// 布局：16 核 x singleCore(256x256)，baseM/N/K=128，stepM=stepN=2，
+// L1 双缓冲 depthA1=depthB1=4，L0A/B/C 各双缓冲。
+constexpr int kTilingInts = 256;
+
+void FillTiling(int32_t *t)
+{
+    for (int i = 0; i < kTilingInts; ++i) {
+        t[i] = 0;
+    }
+    t[0]  = 16;     // usedCoreNum
+    t[1]  = 1024;   // M
+    t[2]  = 1024;   // N
+    t[3]  = 1024;   // Ka
+    t[4]  = 1024;   // Kb
+    t[5]  = 256;    // singleCoreM
+    t[6]  = 256;    // singleCoreN
+    t[7]  = 1024;   // singleCoreK
+    t[8]  = 128;    // baseM
+    t[9]  = 128;    // baseN
+    t[10] = 128;    // baseK
+    t[11] = 4;      // depthA1
+    t[12] = 4;      // depthB1
+    t[13] = 2;      // stepM
+    t[14] = 2;      // stepN
+    t[22] = 1;      // batchM
+    t[23] = 1;      // batchN
+    t[24] = 1;      // singleBatchM
+    t[25] = 1;      // singleBatchN
+    t[26] = 1;      // stepKa
+    t[27] = 1;      // stepKb
+    t[30] = 2;      // dbL0A
+    t[31] = 2;      // dbL0B
+    t[32] = 2;      // dbL0C
+}
+}
 
 namespace {
 // 从环境变量读正整数，读不到或非法则用默认值
@@ -63,6 +102,14 @@ int32_t main(int32_t argc, char **argv)
     CHECK_ACL(aclrtMemcpy(aDev, aBytes, aHost, aBytes, ACL_MEMCPY_HOST_TO_DEVICE));
     CHECK_ACL(aclrtMemcpy(bDev, bBytes, bHost, bBytes, ACL_MEMCPY_HOST_TO_DEVICE));
 
+    // ---- tiling：host 填好，拷到 device，作为内核第 4 个参数 ----
+    const size_t tilingBytes = (size_t)kTilingInts * sizeof(int32_t);
+    uint8_t *tilingDev = nullptr;
+    CHECK_ACL(aclrtMalloc((void **)&tilingDev, tilingBytes, ACL_MEM_MALLOC_HUGE_FIRST));
+    int32_t tilingHost[kTilingInts];
+    FillTiling(tilingHost);
+    CHECK_ACL(aclrtMemcpy(tilingDev, tilingBytes, tilingHost, tilingBytes, ACL_MEMCPY_HOST_TO_DEVICE));
+
     aclrtEvent startEv = nullptr, endEv = nullptr;
     CHECK_ACL(aclrtCreateEvent(&startEv));
     CHECK_ACL(aclrtCreateEvent(&endEv));
@@ -70,7 +117,7 @@ int32_t main(int32_t argc, char **argv)
     // 预热：首次 launch 会包含 kernel 库加载、UB/栈初始化等一次性开销，
     // 这些开销计入平均值会污染结果，尤其当 kernel 优化到 10us 量级时。
     for (int i = 0; i < warmup; ++i) {
-        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
+        matmul_v4_do(blockDim, stream, aDev, bDev, cDev, tilingDev);
     }
     CHECK_ACL(aclrtSynchronizeStream(stream));
 
@@ -79,7 +126,7 @@ int32_t main(int32_t argc, char **argv)
     // launch 开销算进去；连续发射再取平均可以把这部分摊薄。
     CHECK_ACL(aclrtRecordEvent(startEv, stream));
     for (int it = 0; it < repeat; ++it) {
-        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
+        matmul_v4_do(blockDim, stream, aDev, bDev, cDev, tilingDev);
     }
     CHECK_ACL(aclrtRecordEvent(endEv, stream));
     CHECK_ACL(aclrtSynchronizeStream(stream)); // 只同步一次
@@ -102,6 +149,7 @@ int32_t main(int32_t argc, char **argv)
     CHECK_ACL(aclrtFree(aDev));
     CHECK_ACL(aclrtFree(bDev));
     CHECK_ACL(aclrtFree(cDev));
+    CHECK_ACL(aclrtFree(tilingDev));
     CHECK_ACL(aclrtFreeHost(aHost));
     CHECK_ACL(aclrtFreeHost(bHost));
     CHECK_ACL(aclrtFreeHost(cHost));
