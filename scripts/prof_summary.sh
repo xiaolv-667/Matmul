@@ -37,6 +37,8 @@ echo "=============== 流水线占用（40 核汇总）==============="
 awk -F, '
 NR==1{ for(i=1;i<=NF;i++) h[$i]=i; next }
 {
+  # mix 核（1 AIC + 2 AIV）会产生 aic 行，这些行的 aiv_* 字段是 NA，必须跳过
+  if (($h["aiv_time(us)"] "") !~ /^[0-9.]+$/) next
   t  = $h["aiv_time(us)"]+0
   vt = $h["aiv_vec_time(us)"]+0;   vr = $h["aiv_vec_ratio"]+0
   mt = $h["aiv_mte2_time(us)"]+0;  mr = $h["aiv_mte2_ratio"]+0
