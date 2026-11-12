@@ -5,48 +5,32 @@
 
 #include <cstdlib>
 
+#include "adv_api/matmul/matmul_tiling.h"
+#include "adv_api/kernel_tiling.h"
+#include "utils/tiling/platform/platform_ascendc.h"
+
 extern void matmul_v4_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
 
 namespace {
-// ---- 手工填 TCubeTiling ----
-// 字段顺序与 CANN kernel_tiling.h 的 TCubeTiling 一致（全部 int32）。
-// 布局：16 核 x singleCore(256x256)，baseM/N/K=128，stepM=stepN=2，
-// L1 双缓冲 depthA1=depthB1=4，L0A/B/C 各双缓冲。
-constexpr int kTilingInts = 256;
-
-void FillTiling(int32_t *t)
+// 用官方 host 侧 tiling 生成器算 TCubeTiling。
+// 手填结构实测精度不过（fro_err≈0.97），官方生成器会自动决定 baseM/baseN/baseK、
+// L1/L0 深度，并处理 M/N 不能被核数整除时的尾块切分。
+void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
 {
-    for (int i = 0; i < kTilingInts; ++i) {
-        t[i] = 0;
-    }
-    t[0]  = 16;     // usedCoreNum
-    t[1]  = 1024;   // M
-    t[2]  = 1024;   // N
-    t[3]  = 1024;   // Ka
-    t[4]  = 1024;   // Kb
-    t[5]  = 256;    // singleCoreM
-    t[6]  = 256;    // singleCoreN
-    t[7]  = 1024;   // singleCoreK
-    t[8]  = 128;    // baseM
-    t[9]  = 128;    // baseN
-    t[10] = 128;    // baseK
-    t[11] = 4;      // depthA1
-    t[12] = 4;      // depthB1
-    t[13] = 2;      // stepM
-    t[14] = 2;      // stepN
-    t[22] = 1;      // batchM
-    t[23] = 1;      // batchN
-    t[24] = 1;      // singleBatchM
-    t[25] = 1;      // singleBatchN
-    t[26] = 1;      // stepKa
-    t[27] = 1;      // stepKb
-    t[30] = 2;      // dbL0A
-    t[31] = 2;      // dbL0B
-    t[32] = 2;      // dbL0C
-}
+    platform_ascendc::PlatformAscendC *plat = platform_ascendc::PlatformAscendCManager::GetInstance();
+    matmul_tiling::MatmulApiTiling api(*plat);
+    api.SetAType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
+                 matmul_tiling::DataType::DT_FLOAT16, false);
+    api.SetBType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
+                 matmul_tiling::DataType::DT_FLOAT16, false);
+    api.SetCType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
+                 matmul_tiling::DataType::DT_FLOAT16);
+    api.SetShape(1024, 1024, 1024);
+    api.SetOrgShape(1024, 1024, 1024);
+    api.SetBias(false);
+    api.GetTiling(tiling);
 }
 
-namespace {
 // 从环境变量读正整数，读不到或非法则用默认值
 int EnvInt(const char *name, int fallback)
 {
@@ -102,13 +86,22 @@ int32_t main(int32_t argc, char **argv)
     CHECK_ACL(aclrtMemcpy(aDev, aBytes, aHost, aBytes, ACL_MEMCPY_HOST_TO_DEVICE));
     CHECK_ACL(aclrtMemcpy(bDev, bBytes, bHost, bBytes, ACL_MEMCPY_HOST_TO_DEVICE));
 
-    // ---- tiling：host 填好，拷到 device，作为内核第 4 个参数 ----
-    const size_t tilingBytes = (size_t)kTilingInts * sizeof(int32_t);
+    // ---- tiling：官方生成器算好，拷到 device，作为内核第 4 个参数 ----
+    constexpr size_t kTilingBytes = 1024;   // 留足余量，超过 sizeof(TCubeTiling)
     uint8_t *tilingDev = nullptr;
-    CHECK_ACL(aclrtMalloc((void **)&tilingDev, tilingBytes, ACL_MEM_MALLOC_HUGE_FIRST));
-    int32_t tilingHost[kTilingInts];
-    FillTiling(tilingHost);
-    CHECK_ACL(aclrtMemcpy(tilingDev, tilingBytes, tilingHost, tilingBytes, ACL_MEMCPY_HOST_TO_DEVICE));
+    CHECK_ACL(aclrtMalloc((void **)&tilingDev, kTilingBytes, ACL_MEM_MALLOC_HUGE_FIRST));
+    CHECK_ACL(aclrtMemset(tilingDev, kTilingBytes, 0, kTilingBytes));
+    AscendC::tiling::TCubeTiling cubeTiling;
+    ComputeTiling(cubeTiling);
+    CHECK_ACL(aclrtMemcpy(tilingDev, kTilingBytes, &cubeTiling, sizeof(cubeTiling),
+                          ACL_MEMCPY_HOST_TO_DEVICE));
+    // 核数以 tiling 为准
+    blockDim = static_cast<uint32_t>(cubeTiling.usedCoreNum);
+    printf("[TILING] usedCoreNum=%d baseM=%d baseN=%d baseK=%d singleCoreM=%d singleCoreN=%d "
+           "depthA1=%d depthB1=%d stepM=%d stepN=%d\n",
+           cubeTiling.usedCoreNum, cubeTiling.baseM, cubeTiling.baseN, cubeTiling.baseK,
+           cubeTiling.singleCoreM, cubeTiling.singleCoreN, cubeTiling.depthA1, cubeTiling.depthB1,
+           cubeTiling.stepM, cubeTiling.stepN);
 
     aclrtEvent startEv = nullptr, endEv = nullptr;
     CHECK_ACL(aclrtCreateEvent(&startEv));

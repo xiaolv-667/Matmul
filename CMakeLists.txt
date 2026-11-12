@@ -42,6 +42,11 @@ target_compile_definitions(ascendc_kernels_bbit PRIVATE
     SOC_VERSION="${SOC_VERSION}"
 )
 
+# host 侧要用官方 tiling 生成器（MatmulApiTiling / PlatformAscendC）
+target_include_directories(ascendc_kernels_bbit PRIVATE
+    ${ASCEND_CANN_PACKAGE_PATH}/aarch64-linux/asc/include
+)
+
 target_link_libraries(ascendc_kernels_bbit PRIVATE
     $<BUILD_INTERFACE:$<$<OR:$<STREQUAL:${RUN_MODE},npu>,$<STREQUAL:${RUN_MODE},sim>>:host_intf_pub>>
     $<BUILD_INTERFACE:$<$<STREQUAL:${RUN_MODE},cpu>:ascendcl>>
