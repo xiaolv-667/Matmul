@@ -11,7 +11,8 @@ constexpr uint32_t XH_ADDR = 0;                     // half[N]  2048 B
 constexpr uint32_t YH_ADDR = XH_ADDR + N * 2;       // half[N]  2048 B
 constexpr uint32_t XF_ADDR = YH_ADDR + N * 2;       // float[N] 4096 B
 constexpr uint32_t XT_ADDR = XF_ADDR + N * 4;       // float[N] 4096 B（归约 ping-pong）
-// 共 12 KB，UB 有 192 KB，余量充足
+constexpr uint32_t XE_ADDR = XT_ADDR + N * 4;       // float[N] 4096 B（Exp 输出，避免就地）
+// 共 16 KB，UB 有 192 KB，余量充足
 
 // ---- 行内归约：两个 buffer 交替做 dst/src，避免 dst 与 src 同 buffer 重叠 ----
 // 每次把后半段并进前半段，log2(N) 步完成。
@@ -106,6 +107,7 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
     AscendC::LocalTensor<half>  yHalf(TPosition::VECCALC, YH_ADDR, N);
     AscendC::LocalTensor<float> xF   (TPosition::VECCALC, XF_ADDR, N);
     AscendC::LocalTensor<float> xT   (TPosition::VECCALC, XT_ADDR, N);
+    AscendC::LocalTensor<float> xE   (TPosition::VECCALC, XE_ADDR, N);
 
     for (uint32_t i = 0; i < M; ++i) {
         // ---------------- 第 1 遍：求本行最大值 ----------------
@@ -121,8 +123,8 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::Cast(xF, xHalf, AscendC::RoundMode::CAST_NONE, N);
         AscendC::Adds(xF, xF, -rowMax, N);
-        AscendC::Exp(xF, xF, N);
-        const float rowSum = TreeReduceSum(xF, xT, N);  // 就地破坏 xF 无妨，pass3 会重算
+        AscendC::Exp(xE, xF, N);                        // 输出到独立 buffer，避免就地
+        const float rowSum = TreeReduceSum(xE, xT, N);
 
         // ---------------- 第 3 遍：归一化并写回 ----------------
         AscendC::DataCopy(xHalf, xGm[i * N], N);      // 第三次重读
@@ -130,8 +132,8 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::Cast(xF, xHalf, AscendC::RoundMode::CAST_NONE, N);
         AscendC::Adds(xF, xF, -rowMax, N);
-        AscendC::Exp(xF, xF, N);                      // exp 第二次计算
-        AscendC::Muls(xF, xF, 1.0f / rowSum, N);
+        AscendC::Exp(xE, xF, N);                        // exp 第二次计算（写到独立 buffer）
+        AscendC::Muls(xF, xE, 1.0f / rowSum, N);
         AscendC::Cast(yHalf, xF, AscendC::RoundMode::CAST_NONE, N);
 
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID0);
