@@ -23,3 +23,6 @@ CAMODEL_LOG_PATH/
 .atomcode/
 .vscode/
 .idea/
+
+# softmax 子项目的原始采集产物（顶层的 /prof/ 只匹配根目录，拦不住这个）
+/softmax/prof/
