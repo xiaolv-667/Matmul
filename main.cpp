@@ -36,10 +36,15 @@ void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
     api.SetBias(false);
     // L1 的 A/B 双缓冲
     api.SetDoubleBuffer(true, true, false, false);
-    // 扫参结论：手动钉 base 尺寸反而更慢，交回生成器自动选择。
-    //   base=128/128/128（SetFixSplit 固定）: 237.6 us / 9.04 TFLOPS
-    //   base=128/256/64（生成器自动）      : 198.3 us / 10.83 TFLOPS
-    // api.SetFixSplit(128, 128, 128);
+    // ---- base / 缓冲 扫描结论（16 核，全部实测）----
+    //   auto 128/256/64, db=(T,T,F,F)  : 24.377 us / 88.10 TFLOPS   <-- 最优，采用
+    //   fix  128/128/128, db=(T,T,F,F) : 27.523 us / 78.03 TFLOPS
+    //   fix  128/128/64,  db=(T,T,T,F) : 27.483 us / 78.14 TFLOPS（L0C 双缓冲实测为负收益）
+    //   单核时 auto 198.4us/10.83 vs fix128^3 237.6us/9.04
+    // 注意：SetFixSplit 的 baseK 会被生成器钳制（传 64 实际给 128），
+    //       所以 baseK 并非自由变量，这也解释了 base 扫描为何难有正收益。
+    // 结论：交回生成器自动选择。
+    api.SetDoubleBuffer(true, true, false, false);
     api.GetTiling(tiling);
 }
 
