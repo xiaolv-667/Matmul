@@ -107,8 +107,8 @@ int32_t main(int32_t argc, char **argv)
     ComputeTiling(cubeTiling);
     CHECK_ACL(aclrtMemcpy(tilingDev, kTilingBytes, &cubeTiling, sizeof(cubeTiling),
                           ACL_MEMCPY_HOST_TO_DEVICE));
-    // 核数以 tiling 为准
-    blockDim = static_cast<uint32_t>(cubeTiling.usedCoreNum);
+    // 核数以 kernel 侧约定为准：4x4 = 16 核（tiling 生成器在本版本不支持设核数）
+    blockDim = 16;
     printf("[TILING] usedCoreNum=%d baseM=%d baseN=%d baseK=%d singleCoreM=%d singleCoreN=%d "
            "depthA1=%d depthB1=%d stepM=%d stepN=%d\n",
            cubeTiling.usedCoreNum, cubeTiling.baseM, cubeTiling.baseN, cubeTiling.baseK,
