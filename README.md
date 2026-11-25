@@ -79,6 +79,11 @@
 │   ├── prof.sh                ← msprof 采集封装
 │   ├── prof_summary.sh        ← profiling 结果汇总
 │   └── bench_official.py      ← CANN 官方实现对照测试
+├── softmax/                   ← ★ 第二个算子：Softmax（Vector 路线，memory-bound）
+│   ├── README.md              ← 版本表、瓶颈链、两个踩过的坑
+│   ├── softmax_v0..v4.cpp     ← 五个版本（朴素三遍 → 多核 → 一遍遍历 → 归约优化）
+│   ├── results.md / build.sh / bench.sh / scripts/
+│   └── 结论：0.8619 ms → 0.0187 ms，累计 46×，fro_err=1.06e-05
 ├── versions/                  ← ★ 7 个版本的代码快照，可直接对比
 │   ├── matmul_v0_naive.cpp
 │   ├── matmul_v1_multicore.cpp
