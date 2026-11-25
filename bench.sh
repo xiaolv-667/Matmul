@@ -50,12 +50,12 @@ if [ ! -f "${LIBDIR}/libascendc_kernels_${RUN_MODE}.so" ]; then
     exit 1
 fi
 
-# ---- 数据只生成一次（gen_data.py 用固定 seed=42，可复现）----
-if [ ! -f "input/a.bin" ] || [ ! -f "input/b.bin" ] || [ ! -f "output/golden.bin" ]; then
-    echo "[INFO] 生成输入数据与 golden"
-    mkdir -p input output
-    python3 scripts/gen_data.py
-fi
+# ---- 按当前 MMA_SIZE 重新生成数据 ----
+# 尺寸可能通过 MMA_SIZE 改变，旧数据会与之不匹配，所以每次都重生成
+# （gen_data.py 用固定 seed=42，同尺寸下结果可复现）
+echo "[INFO] 生成输入数据与 golden (MMA_SIZE=${MMA_SIZE:-1024})"
+mkdir -p input output
+python3 scripts/gen_data.py
 
 # ---- 记录本次实际使用的构建配置（而不是命令行以为的配置）----
 build_soc=$(sed -n 's/^SOC_VERSION:STRING=//p' build/CMakeCache.txt 2>/dev/null | head -1)

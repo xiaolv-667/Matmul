@@ -1,7 +1,9 @@
 import os
 import numpy as np
 
-M = N = K = 1024
+# 问题规模由 MMA_SIZE 环境变量控制（默认 1024），与 main.cpp 的 MMA_SIZE 保持一致
+S = int(os.environ.get("MMA_SIZE", "1024"))
+M = N = K = S
 DT = np.float16                      # 和官方基准同口径
 
 os.makedirs("input", exist_ok=True)
@@ -18,4 +20,4 @@ b.tofile("input/b.bin")
 golden = (a.astype(np.float32) @ b.astype(np.float32)).astype(DT)
 golden.tofile("output/golden.bin")
 
-print(f"gen {M}x{N}x{K} {DT.__name__}, {a.nbytes} bytes")
+print(f"gen {M}x{N}x{K} {DT.__name__}, a={a.nbytes} bytes")

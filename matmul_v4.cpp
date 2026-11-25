@@ -4,34 +4,26 @@
 using namespace AscendC;
 
 namespace {
-constexpr uint32_t M = 1024, N = 1024, K = 1024;
 constexpr int32_t kTilingInts = 256;   // TCubeTiling 字段总大小（int32 计）
 
-// ---- 核间切分参数（本版由 kernel 自行接管，不依赖 tiling 生成器）----
-constexpr uint32_t kTileM = 256;              // 每核负责的输出块 M
-constexpr uint32_t kTileN = 256;              // 每核负责的输出块 N
-constexpr uint32_t kGridN = N / kTileN;       // 4 -> 4x4 = 16 核
-constexpr uint32_t kGridM = M / kTileM;
+// ---- 每核单次计算的输出块尺寸（不随问题规模变）----
+// 256x256 在 1024^3 上实测最优；M/N 变大时改为"每核循环处理多个 tile"。
+constexpr uint32_t kTileM = 256;
+constexpr uint32_t kTileN = 256;
 }
 
-// V4：AscendC::MatmulImpl（MDL 实现） + kernel 内自行核间切分。
+// V4：AscendC::MatmulImpl（MDL） + kernel 内自行核间切分。
 //
-// 为什么自己在 kernel 里切核：
-//   本 CANN 版本的 MatmulApiTiling 没有 SetDim / SetSingleShape /
-//   MultiCoreMatmulTiling，host 侧无法设定核数（usedCoreNum 恒为 1）。
-//   实测 SetShape(256,256,1024) 只让 singleCoreM/N 变小、核数不变，
-//   手动覆盖 usedCoreNum=16 则 16 个核都算同一块（cos=0.2518=1/sqrt(16)）。
-// 做法：
-//   tiling 仍按单核生成（参数正确），kernel 里用 GetBlockIdx 算出本核的
-//   (mt, nt) 子块，再通过 MatmulImplBase 的运行期 SetOrgShape/SetSingleShape
-//   声明"原始矩阵"与"本核计算量"，并把 A/B/C 的 GlobalTensor 偏移到子块起点。
+// 支持任意 M/N/K（M/N 需为 256 的倍数，K 需满足 tiling 的对齐要求）：
+//   - 问题尺寸从 tiling 的 M/N/Ka 读出（host 按实际尺寸生成 tiling）
+//   - 输出空间切成 (M/256) x (N/256) 个 tile，各核按 idx += blockDim 轮转领取
+//   - 每个 tile 用 SetOrgShape + SetSingleShape 声明"原始矩阵"与"本核计算量"
+//
+// 为什么自己在 kernel 里切核：本 CANN 版本的 MatmulApiTiling 没有 SetDim /
+// SetSingleShape / MultiCoreMatmulTiling，host 侧无法设定核数（usedCoreNum 恒为 1）。
 extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
-
-    using A_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
-    using B_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
-    using C_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
 
     // 官方 API 内部会把 tiling 指针转成普通指针，直接传 __gm__ 指针编译不过。
     // 等价于官方 GET_TILING_DATA：先把 tiling 从 GM 读进核内局部变量再传入。
@@ -45,34 +37,39 @@ extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c,
         }
     }
 
-    TPipe pipe;
-    AscendC::MatmulImpl<A_T, B_T, C_T, C_T> mm;
-    mm.Init(&tilingData, &pipe);
+    const uint32_t M = static_cast<uint32_t>(tilingData.M);
+    const uint32_t N = static_cast<uint32_t>(tilingData.N);
+    const uint32_t K = static_cast<uint32_t>(tilingData.Ka);
 
-    // ---- 自行核间切分 ----
-    const uint32_t blk = AscendC::GetBlockIdx();
-    const uint32_t mt = blk / kGridN;
-    const uint32_t nt = blk % kGridN;
-    if (mt >= kGridM) {
-        return;   // blockDim 超出实际子块数时，多余核直接退出
-    }
+    TPipe pipe;
+    AscendC::MatmulImpl<MatmulType<TPosition::GM, CubeFormat::ND, half>,
+                        MatmulType<TPosition::GM, CubeFormat::ND, half>,
+                        MatmulType<TPosition::GM, CubeFormat::ND, half>,
+                        MatmulType<TPosition::GM, CubeFormat::ND, half>> mm;
+    mm.Init(&tilingData, &pipe);
 
     GlobalTensor<half> aGm, bGm, cGm;
     aGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), M * K);
     bGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), K * N);
     cGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(c), M * N);
 
-    // 原始矩阵形状（用于地址换算）
-    mm.SetOrgShape(M, N, K);
-    // 本核计算量：256 x 256，K 方向全量累加
-    mm.SetSingleShape(kTileM, kTileN, K);
+    const uint32_t gridN = N / kTileN;
+    const uint32_t gridM = M / kTileM;
+    const uint32_t totalTiles = gridM * gridN;
+    const uint32_t blkNum = AscendC::GetBlockNum();
 
-    // A 取第 mt 个 M 带（A 是 [M,K]，行偏移 = mt*kTileM*K）
-    // B 取第 nt 个 N 带（B 是 [K,N]，列偏移 = nt*kTileN）
-    // C 写到 (mt, nt) 子块起点
-    mm.SetTensorA(aGm[mt * kTileM * K]);
-    mm.SetTensorB(bGm[nt * kTileN]);
-    mm.IterateAll(cGm[mt * kTileM * N + nt * kTileN]);
+    // 各核轮转领取 tile；1024^3 时 16 tile / 16 核 = 每核 1 块（与之前一致），
+    // 2048^3 时 64/16 = 每核 4 块，4096^3 时 256/16 = 每核 16 块。
+    for (uint32_t idx = AscendC::GetBlockIdx(); idx < totalTiles; idx += blkNum) {
+        const uint32_t mt = idx / gridN;
+        const uint32_t nt = idx % gridN;
+
+        mm.SetOrgShape(M, N, K);                 // 原始矩阵
+        mm.SetSingleShape(kTileM, kTileN, K);    // 本核这块的计算量
+        mm.SetTensorA(aGm[mt * kTileM * K]);     // A 的第 mt 个 M 带
+        mm.SetTensorB(bGm[nt * kTileN]);         // B 的第 nt 个 N 带
+        mm.IterateAll(cGm[mt * kTileM * N + nt * kTileN]);
+    }
 }
 
 #ifndef ASCENDC_CPU_DEBUG

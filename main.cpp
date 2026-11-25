@@ -15,7 +15,7 @@ namespace {
 // 用官方 host 侧 tiling 生成器算 TCubeTiling。
 // 手填结构实测精度不过（fro_err≈0.97），官方生成器会自动决定 baseM/baseN/baseK、
 // L1/L0 深度，并处理 M/N 不能被核数整除时的尾块切分。
-void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
+void ComputeTiling(AscendC::tiling::TCubeTiling &tiling, uint32_t M, uint32_t N, uint32_t K)
 {
     platform_ascendc::PlatformAscendC *plat = platform_ascendc::PlatformAscendCManager::GetInstance();
     matmul_tiling::MatmulApiTiling api(*plat);
@@ -31,8 +31,8 @@ void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
     //   2) 再手动 tiling.usedCoreNum=16 -> 仍是 cos=0.2518，说明 16 个核算的是同一块。
     // 即本 CANN 版本的 MatmulApiTiling 不支持 host 侧核数切分（无 SetDim/SetSingleShape）。
     // 因此回到单核形状，保证结果正确。
-    api.SetShape(1024, 1024, 1024);
-    api.SetOrgShape(1024, 1024, 1024);
+    api.SetShape(M, N, K);        // 单核计算量 = 全量；核间切分在 kernel 里做
+    api.SetOrgShape(M, N, K);     // 原始矩阵
     api.SetBias(false);
     // L1 的 A/B 双缓冲
     api.SetDoubleBuffer(true, true, false, false);
@@ -44,7 +44,6 @@ void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
     // 注意：SetFixSplit 的 baseK 会被生成器钳制（传 64 实际给 128），
     //       所以 baseK 并非自由变量，这也解释了 base 扫描为何难有正收益。
     // 结论：交回生成器自动选择。
-    api.SetDoubleBuffer(true, true, false, false);
     api.GetTiling(tiling);
 }
 
@@ -74,7 +73,10 @@ int32_t main(int32_t argc, char **argv)
     const int repeat = EnvInt("BENCH_REPEAT", 100);
     const int warmup = EnvInt("BENCH_WARMUP", 5);
 
-    const uint32_t M = 1024, N = 1024, K = 1024; // 数据处理的规模 M*N*K 规模的数据乘
+    // 问题规模由 MMA_SIZE 环境变量控制（默认 1024），便于对标官方大尺寸数据
+    const char *szEnv = getenv("MMA_SIZE");
+    const uint32_t S = (szEnv != nullptr && atoi(szEnv) > 0) ? (uint32_t)atoi(szEnv) : 1024u;
+    const uint32_t M = S, N = S, K = S; // 数据处理的规模 M*N*K
 
     size_t aBytes = (size_t)M * K * 2; // 数据类型 fp16
     size_t bBytes = (size_t)K * N * 2;
@@ -109,7 +111,7 @@ int32_t main(int32_t argc, char **argv)
     CHECK_ACL(aclrtMalloc((void **)&tilingDev, kTilingBytes, ACL_MEM_MALLOC_HUGE_FIRST));
     CHECK_ACL(aclrtMemset(tilingDev, kTilingBytes, 0, kTilingBytes));
     AscendC::tiling::TCubeTiling cubeTiling;
-    ComputeTiling(cubeTiling);
+    ComputeTiling(cubeTiling, M, N, K);
     CHECK_ACL(aclrtMemcpy(tilingDev, kTilingBytes, &cubeTiling, sizeof(cubeTiling),
                           ACL_MEMCPY_HOST_TO_DEVICE));
     // 核数以 kernel 侧约定为准：4x4 = 16 核（tiling 生成器在本版本不支持设核数）
