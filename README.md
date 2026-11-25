@@ -101,9 +101,9 @@
 
 **阅读建议**：先看 `versions/` 里的两个相邻文件差异（或 `docs/patches/` 的 diff），再看 `docs/` 里对应那一版的分析，最后到 `docs/prof/` 核对数据。
 
-> **另一个算子已拆分为独立仓库**：Softmax（Vector 路线 / memory-bound，与 Matmul 的 compute-bound 互补）。
+> **另一个算子已拆分为独立仓库**：[xiaolv-667/Softmax](https://github.com/xiaolv-667/Softmax)（Vector 路线 / memory-bound，与 Matmul 的 compute-bound 互补）。
 > 0.8619 ms → 0.0147 ms（**58.6×**），同尺寸比 CANN 官方 `aclnnSoftmax` 快 **2.25×**，含 v0~v6 六版逐版 msprof 归因。
-> 见 GitHub 上的 `Softmax` 仓库（本仓库不再包含它）。
+> 本仓库只保留 Matmul，不再包含 Softmax 的代码。
 
 ---
 
