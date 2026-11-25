@@ -6,18 +6,23 @@ using namespace AscendC;
 namespace {
 constexpr int32_t kTilingInts = 256;   // TCubeTiling 字段总大小（int32 计）
 
-// ---- 每核单次计算的输出块尺寸（不随问题规模变）----
-// 256x256 在 1024^3 上实测最优；M/N 变大时改为"每核循环处理多个 tile"。
-constexpr uint32_t kTileM = 256;
-constexpr uint32_t kTileN = 256;
+// ---- 核间网格固定 4x4 = 16 块，tile 尺寸随问题规模自适应 ----
+// 之前固定 tile=256x256 时，tile 数 = (M/256)*(N/256) 随规模线性增长，
+// 复用放大 = A 读 N/256 遍、B 读 M/256 遍，4096^3 时流量冲到 1 GB，
+// 已接近带宽墙（约 1.26 TB/s），所以大尺寸只跑到官方 62%。
+// 改成固定 4x4 后：每核正好 1 块，复用放大恒为 4x。
+//   1024^3: 流量 16 MB  （不变）
+//   2048^3: 128 MB -> 64 MB
+//   4096^3: 1 GB   -> 256 MB
+// L0C 不受影响：singleShape 变大时 API 内部按 baseM/baseN 循环，
+// L0C 单块仍然是 baseM*baseN*4（auto 配置下 128*256*4 = 128 KB）。
+constexpr uint32_t kGrid = 4;
 }
 
 // V4：AscendC::MatmulImpl（MDL） + kernel 内自行核间切分。
 //
-// 支持任意 M/N/K（M/N 需为 256 的倍数，K 需满足 tiling 的对齐要求）：
-//   - 问题尺寸从 tiling 的 M/N/Ka 读出（host 按实际尺寸生成 tiling）
-//   - 输出空间切成 (M/256) x (N/256) 个 tile，各核按 idx += blockDim 轮转领取
-//   - 每个 tile 用 SetOrgShape + SetSingleShape 声明"原始矩阵"与"本核计算量"
+// 支持任意 M/N/K（M/N 需能被 kGrid 整除）。问题尺寸从 tiling 的 M/N/Ka 读出，
+// host 按实际尺寸生成 tiling（SetShape/SetOrgShape 传给全量 M/N/K）。
 //
 // 为什么自己在 kernel 里切核：本 CANN 版本的 MatmulApiTiling 没有 SetDim /
 // SetSingleShape / MultiCoreMatmulTiling，host 侧无法设定核数（usedCoreNum 恒为 1）。
@@ -41,6 +46,10 @@ extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c,
     const uint32_t N = static_cast<uint32_t>(tilingData.N);
     const uint32_t K = static_cast<uint32_t>(tilingData.Ka);
 
+    const uint32_t tileM = M / kGrid;
+    const uint32_t tileN = N / kGrid;
+    constexpr uint32_t totalTiles = kGrid * kGrid;
+
     TPipe pipe;
     AscendC::MatmulImpl<MatmulType<TPosition::GM, CubeFormat::ND, half>,
                         MatmulType<TPosition::GM, CubeFormat::ND, half>,
@@ -53,22 +62,18 @@ extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c,
     bGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), K * N);
     cGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(c), M * N);
 
-    const uint32_t gridN = N / kTileN;
-    const uint32_t gridM = M / kTileM;
-    const uint32_t totalTiles = gridM * gridN;
     const uint32_t blkNum = AscendC::GetBlockNum();
 
-    // 各核轮转领取 tile；1024^3 时 16 tile / 16 核 = 每核 1 块（与之前一致），
-    // 2048^3 时 64/16 = 每核 4 块，4096^3 时 256/16 = 每核 16 块。
+    // 16 块 / 16 核 = 每核 1 块；blockDim 小于 16 时轮转多块
     for (uint32_t idx = AscendC::GetBlockIdx(); idx < totalTiles; idx += blkNum) {
-        const uint32_t mt = idx / gridN;
-        const uint32_t nt = idx % gridN;
+        const uint32_t mt = idx / kGrid;
+        const uint32_t nt = idx % kGrid;
 
-        mm.SetOrgShape(M, N, K);                 // 原始矩阵
-        mm.SetSingleShape(kTileM, kTileN, K);    // 本核这块的计算量
-        mm.SetTensorA(aGm[mt * kTileM * K]);     // A 的第 mt 个 M 带
-        mm.SetTensorB(bGm[nt * kTileN]);         // B 的第 nt 个 N 带
-        mm.IterateAll(cGm[mt * kTileM * N + nt * kTileN]);
+        mm.SetOrgShape(M, N, K);              // 原始矩阵
+        mm.SetSingleShape(tileM, tileN, K);   // 本核这块的计算量
+        mm.SetTensorA(aGm[mt * tileM * K]);   // A 的第 mt 个 M 带
+        mm.SetTensorB(bGm[nt * tileN]);       // B 的第 nt 个 N 带
+        mm.IterateAll(cGm[mt * tileM * N + nt * tileN]);
     }
 }
 
