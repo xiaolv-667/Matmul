@@ -21,3 +21,4 @@
 | 2026-11-25 16:32 | softmax@v5-multicore-12-gd5c206e-dirty | Ascend910B3/Release | 40 | 100 | 0.019620 | 213.77 | 1.061e-05 | 0.99999991 | PASS |
 | 2026-11-25 16:33 | softmax@v5-multicore-12-gd5c206e-dirty | Ascend910B3/Release | 40 | 100 | 0.019388 | 216.34 | 1.061e-05 | 0.99999991 | PASS |
 | 2026-11-25 16:34 | softmax@v5-multicore-12-gd5c206e-dirty | Ascend910B3/Release | 40 | 100 | 0.018730 | 223.93 | 1.061e-05 | 0.99999991 | PASS |
+| 2026-11-25 16:42 | softmax@softmax-v4-1-g9d42b8f-dirty | Ascend910B3/Release | 40 | 100 | 0.015064 | 278.44 | 6.414e-06 | 0.99999982 | PASS |
