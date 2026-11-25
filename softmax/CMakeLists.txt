@@ -24,9 +24,12 @@ if(CMAKE_INSTALL_PREFIX STREQUAL /usr/local)
     set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_LIST_DIR}/out" CACHE STRING "path for install()" FORCE)
 endif()
 
-# 当前版本的 kernel 源文件（换版本时改这一行）
+# 内核版本：./build.sh -n <0..5> 切换，便于逐版做 msprof 对比
+set(SOFTMAX_VER 5 CACHE STRING "which softmax kernel version (0..5)")
+
+# 当前版本对应的 kernel 源文件
 file(GLOB KERNEL_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/softmax_v5.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/softmax_v${SOFTMAX_VER}.cpp
 )
 
 set(CUSTOM_ASCEND310P_LIST "Ascend310P1" "Ascend310P3")
@@ -43,6 +46,7 @@ target_compile_options(softmax_bbit PRIVATE
 
 target_compile_definitions(softmax_bbit PRIVATE
     SOC_VERSION="${SOC_VERSION}"
+    SOFTMAX_VER=${SOFTMAX_VER}
 )
 
 target_link_libraries(softmax_bbit PRIVATE

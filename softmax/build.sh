@@ -20,10 +20,12 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-${CURRENT_DIR}/out}"
 ASCEND_INSTALL_PATH="${ASCEND_INSTALL_PATH:-}"
 CLEAN=0
 
-SHORT=r:,v:,i:,b:,p:,c
-LONG=run-mode:,soc-version:,install-path:,build-type:,install-prefix:,clean
+SHORT=r:,v:,i:,b:,p:,n:,c
+LONG=run-mode:,soc-version:,install-path:,build-type:,install-prefix:,kernel-ver:,clean
 OPTS=$(getopt -a --options $SHORT --longoptions $LONG -- "$@")
 eval set -- "$OPTS"
+
+KERNEL_VER="${KERNEL_VER:-5}"
 
 while :; do
     case "$1" in
@@ -32,6 +34,7 @@ while :; do
     -i | --install-path)   ASCEND_INSTALL_PATH="$2"; shift 2 ;;
     -b | --build-type)     BUILD_TYPE="$2"; shift 2 ;;
     -p | --install-prefix) INSTALL_PREFIX="$2"; shift 2 ;;
+    -n | --kernel-ver)     KERNEL_VER="$2"; shift 2 ;;
     -c | --clean)          CLEAN=1; shift ;;
     --)                    shift; break ;;
     *) echo "[ERROR] Unexpected option: $1"; exit 1 ;;
@@ -65,6 +68,7 @@ echo "=============================================="
 echo " SOFTMAX 子项目"
 echo " SOC_VERSION : ${SOC_VERSION}"
 echo " BUILD_TYPE  : ${BUILD_TYPE}"
+echo " KERNEL_VER  : v${KERNEL_VER}"
 echo " CANN        : ${ASCEND_INSTALL_PATH}"
 echo " CLEAN BUILD : ${CLEAN}"
 echo "=============================================="
@@ -80,6 +84,7 @@ cmake -B build \
     -DSOC_VERSION="${SOC_VERSION}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DCMAKE_INSTALL_PREFIX="${INSTALL_PREFIX}" \
+    -DSOFTMAX_VER="${KERNEL_VER}" \
     -DASCEND_CANN_PACKAGE_PATH="${ASCEND_INSTALL_PATH}"
 
 cmake --build build -j"$(nproc)"

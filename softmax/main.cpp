@@ -5,7 +5,35 @@
 
 #include <cstdlib>
 
+// 由 CMake 传入 SOFTMAX_VER 选择内核版本（./build.sh -n <0..5>）
+#ifndef SOFTMAX_VER
+#define SOFTMAX_VER 5
+#endif
+
+#if SOFTMAX_VER == 0
+extern void softmax_v0_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v0_do
+#elif SOFTMAX_VER == 1
+extern void softmax_v1_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v1_do
+#elif SOFTMAX_VER == 2
+extern void softmax_v2_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v2_do
+#elif SOFTMAX_VER == 3
+extern void softmax_v3_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v3_do
+#elif SOFTMAX_VER == 4
+extern void softmax_v4_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v4_do
+#elif SOFTMAX_VER == 5
 extern void softmax_v5_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v5_do
+#elif SOFTMAX_VER == 6
+extern void softmax_v6_do(uint32_t, void *, uint8_t *, uint8_t *);
+#define SOFTMAX_DO softmax_v6_do
+#else
+#error "SOFTMAX_VER must be in 0..6"
+#endif
 
 namespace {
 // 从环境变量读正整数，读不到或非法则用默认值
@@ -59,13 +87,13 @@ int32_t main(int32_t argc, char **argv)
 
     // 预热：首次 launch 含 kernel 库加载等一次性开销
     for (int i = 0; i < warmup; ++i) {
-        softmax_v5_do(blockDim, stream, xDev, yDev);
+        SOFTMAX_DO(blockDim, stream, xDev, yDev);
     }
     CHECK_ACL(aclrtSynchronizeStream(stream));
 
     CHECK_ACL(aclrtRecordEvent(startEv, stream));
     for (int it = 0; it < repeat; ++it) {
-        softmax_v5_do(blockDim, stream, xDev, yDev);
+        SOFTMAX_DO(blockDim, stream, xDev, yDev);
     }
     CHECK_ACL(aclrtRecordEvent(endEv, stream));
     CHECK_ACL(aclrtSynchronizeStream(stream));
