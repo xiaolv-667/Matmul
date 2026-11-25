@@ -1,0 +1,53 @@
+diff --git a/matmul_v2.cpp b/matmul_v2.cpp
+index 1ddcc20..3be4e5c 100644
+--- a/matmul_v2.cpp
++++ b/matmul_v2.cpp
+@@ -31,15 +31,26 @@ constexpr uint32_t NK_BLOCK = K / Kb;   // 64
+ // 注意：EVENT_ID* 是全局 event_t 枚举，不在 AscendC 命名空间里，必须裸写。
+ // ==========================================================
+ 
++// ================== v3：Axpy 融合 ==================
++// v2 每个 k 步做 3 条向量指令：
++//   Cast  half->float   （精度所需，去不掉）
++//   Muls  bFloat * av   ┐ 这两条合成一条
++//   Add   acc + tmp     ┘
++// v3 用 Axpy(dst, src, scalar) = dst + src*scalar 合成 2 条指令。
++//
++// 收粒：实测 Vector 占 90.4%（1806 us / 1997 us），是当时唯一瓶颈。
++//       砍掉 1/3 向量指令，预期 Vector 1806 -> ~1204 us。
++// 附带：UB 读写量 26KB -> 18KB/步（少一遍 tmp 的写+读），tmp 的 4KB UB 也省了。
++// ===================================================
++
+ constexpr uint32_t HALF_BYTES  = 2;
+ constexpr uint32_t FLOAT_BYTES = 4;
+ 
+-// ---- UB 地址布局（字节），总计 80 KB / 192 KB ----
++// ---- UB 地址布局（字节），总计 76 KB / 192 KB ----
+ constexpr uint32_t B0_ADDR  = 0;
+ constexpr uint32_t B1_ADDR  = B0_ADDR + Kb * N * HALF_BYTES;
+ constexpr uint32_t BF_ADDR  = B1_ADDR + Kb * N * HALF_BYTES;
+-constexpr uint32_t TMP_ADDR = BF_ADDR + N * FLOAT_BYTES;
+-constexpr uint32_t ACC_ADDR = TMP_ADDR + N * FLOAT_BYTES;
++constexpr uint32_t ACC_ADDR = BF_ADDR + N * FLOAT_BYTES;   // v3: Axpy 原地读改写，不再需要 tmp
+ constexpr uint32_t CH_ADDR  = ACC_ADDR + N * FLOAT_BYTES;
+ constexpr uint32_t AH_ADDR  = CH_ADDR + N * HALF_BYTES;
+ }
+@@ -63,7 +74,6 @@ extern "C" __global__ __aicore__ void matmul_v2(GM_ADDR a, GM_ADDR b, GM_ADDR c)
+     AscendC::LocalTensor<half>  bBuf1 (TPosition::VECCALC, B1_ADDR, Kb * N);
+     AscendC::LocalTensor<half>  cHalf (TPosition::VECCALC, CH_ADDR, N);
+     AscendC::LocalTensor<float> bFloat(TPosition::VECCALC, BF_ADDR, N);
+-    AscendC::LocalTensor<float> tmp   (TPosition::VECCALC, TMP_ADDR, N);
+     AscendC::LocalTensor<float> acc   (TPosition::VECCALC, ACC_ADDR, N);
+ 
+     const uint32_t blk    = AscendC::GetBlockIdx();   // 当前使用的 core
+@@ -98,8 +108,8 @@ extern "C" __global__ __aicore__ void matmul_v2(GM_ADDR a, GM_ADDR b, GM_ADDR c)
+             for (uint32_t kk = 0; kk < Kb; ++kk) {
+                 const float av = (float)aHalf.GetValue(kb * Kb + kk);
+                 AscendC::Cast(bFloat, bCur[kk * N], AscendC::RoundMode::CAST_NONE, N);
+-                AscendC::Muls(tmp, bFloat, av, N);
+-                AscendC::Add(acc, acc, tmp, N);
++                // v3: acc = bFloat*av + acc，一条指令替代原来的 Muls + Add
++                AscendC::Axpy(acc, bFloat, av, N);
+             }
+ 
+             // 本块已用完，释放

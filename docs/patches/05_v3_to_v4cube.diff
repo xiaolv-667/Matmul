@@ -1,0 +1,193 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7a20108..abdb5ea 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -15,7 +15,7 @@ endif()
+ 
+ # ${KERNEL_FILES} are used to compile library, push files written by ascendc in ${KERNEL_FILES}.
+ file(GLOB KERNEL_FILES
+-    ${CMAKE_CURRENT_SOURCE_DIR}/matmul_v2.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/matmul_v4.cpp
+ )
+ 
+ set(CUSTOM_ASCEND310P_LIST "Ascend310P1" "Ascend310P3")
+@@ -42,6 +42,11 @@ target_compile_definitions(ascendc_kernels_bbit PRIVATE
+     SOC_VERSION="${SOC_VERSION}"
+ )
+ 
++# host 侧要用官方 tiling 生成器（MatmulApiTiling / PlatformAscendC）
++target_include_directories(ascendc_kernels_bbit PRIVATE
++    ${ASCEND_CANN_PACKAGE_PATH}/aarch64-linux/asc/include
++)
++
+ target_link_libraries(ascendc_kernels_bbit PRIVATE
+     $<BUILD_INTERFACE:$<$<OR:$<STREQUAL:${RUN_MODE},npu>,$<STREQUAL:${RUN_MODE},sim>>:host_intf_pub>>
+     $<BUILD_INTERFACE:$<$<STREQUAL:${RUN_MODE},cpu>:ascendcl>>
+diff --git a/main.cpp b/main.cpp
+index 3ecf836..9927a46 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -5,9 +5,41 @@
+ 
+ #include <cstdlib>
+ 
+-extern void matmul_v2_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *);
++#include "adv_api/matmul/matmul_tiling.h"
++#include "adv_api/kernel_tiling.h"
++#include "utils/tiling/platform/platform_ascendc.h"
++
++extern void matmul_v4_do(uint32_t, void *, uint8_t *, uint8_t *, uint8_t *, uint8_t *);
+ 
+ namespace {
++// 用官方 host 侧 tiling 生成器算 TCubeTiling。
++// 手填结构实测精度不过（fro_err≈0.97），官方生成器会自动决定 baseM/baseN/baseK、
++// L1/L0 深度，并处理 M/N 不能被核数整除时的尾块切分。
++void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
++{
++    platform_ascendc::PlatformAscendC *plat = platform_ascendc::PlatformAscendCManager::GetInstance();
++    matmul_tiling::MatmulApiTiling api(*plat);
++    api.SetAType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
++                 matmul_tiling::DataType::DT_FLOAT16, false);
++    api.SetBType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
++                 matmul_tiling::DataType::DT_FLOAT16, false);
++    api.SetCType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
++                 matmul_tiling::DataType::DT_FLOAT16);
++    api.SetShape(1024, 1024, 1024);
++    api.SetOrgShape(1024, 1024, 1024);
++    api.SetBias(false);
++    // 注意：本 CANN 版本的 MatmulApiTiling 没有 SetDim / SetSingleShape /
++    // MultiCoreMatmulTiling，无法从 host 指定核数切分，生成器固定给单核
++    // （usedCoreNum=1, singleCoreM/N=1024）。多核需要换用带核间切分的 tiling 方案。
++    // 这里只打开 L1 的 A/B 双缓冲。
++    api.SetDoubleBuffer(true, true, false, false);
++    // 扫参结论：手动钉 base 尺寸反而更慢，交回生成器自动选择。
++    //   base=128/128/128（SetFixSplit 固定）: 237.6 us / 9.04 TFLOPS
++    //   base=128/256/64（生成器自动）      : 198.3 us / 10.83 TFLOPS
++    // api.SetFixSplit(128, 128, 128);
++    api.GetTiling(tiling);
++}
++
+ // 从环境变量读正整数，读不到或非法则用默认值
+ int EnvInt(const char *name, int fallback)
+ {
+@@ -56,10 +88,30 @@ int32_t main(int32_t argc, char **argv)
+     CHECK_ACL(aclrtMalloc((void **)&aDev, aBytes, ACL_MEM_MALLOC_HUGE_FIRST));
+     CHECK_ACL(aclrtMalloc((void **)&bDev, bBytes, ACL_MEM_MALLOC_HUGE_FIRST));
+     CHECK_ACL(aclrtMalloc((void **)&cDev, cBytes, ACL_MEM_MALLOC_HUGE_FIRST));
++    // 诊断用：把 C 显存清零后再跑。
++    // 结果若全 0 -> kernal 根本没写进来；若仍是 NaN -> 写进来了但值是错的。
++    CHECK_ACL(aclrtMemset(cDev, cBytes, 0, cBytes));
+     // 拷贝到设备端
+     CHECK_ACL(aclrtMemcpy(aDev, aBytes, aHost, aBytes, ACL_MEMCPY_HOST_TO_DEVICE));
+     CHECK_ACL(aclrtMemcpy(bDev, bBytes, bHost, bBytes, ACL_MEMCPY_HOST_TO_DEVICE));
+ 
++    // ---- tiling：官方生成器算好，拷到 device，作为内核第 4 个参数 ----
++    constexpr size_t kTilingBytes = 1024;   // 留足余量，超过 sizeof(TCubeTiling)
++    uint8_t *tilingDev = nullptr;
++    CHECK_ACL(aclrtMalloc((void **)&tilingDev, kTilingBytes, ACL_MEM_MALLOC_HUGE_FIRST));
++    CHECK_ACL(aclrtMemset(tilingDev, kTilingBytes, 0, kTilingBytes));
++    AscendC::tiling::TCubeTiling cubeTiling;
++    ComputeTiling(cubeTiling);
++    CHECK_ACL(aclrtMemcpy(tilingDev, kTilingBytes, &cubeTiling, sizeof(cubeTiling),
++                          ACL_MEMCPY_HOST_TO_DEVICE));
++    // 核数以 tiling 为准
++    blockDim = static_cast<uint32_t>(cubeTiling.usedCoreNum);
++    printf("[TILING] usedCoreNum=%d baseM=%d baseN=%d baseK=%d singleCoreM=%d singleCoreN=%d "
++           "depthA1=%d depthB1=%d stepM=%d stepN=%d\n",
++           cubeTiling.usedCoreNum, cubeTiling.baseM, cubeTiling.baseN, cubeTiling.baseK,
++           cubeTiling.singleCoreM, cubeTiling.singleCoreN, cubeTiling.depthA1, cubeTiling.depthB1,
++           cubeTiling.stepM, cubeTiling.stepN);
++
+     aclrtEvent startEv = nullptr, endEv = nullptr;
+     CHECK_ACL(aclrtCreateEvent(&startEv));
+     CHECK_ACL(aclrtCreateEvent(&endEv));
+@@ -67,7 +119,7 @@ int32_t main(int32_t argc, char **argv)
+     // 预热：首次 launch 会包含 kernel 库加载、UB/栈初始化等一次性开销，
+     // 这些开销计入平均值会污染结果，尤其当 kernel 优化到 10us 量级时。
+     for (int i = 0; i < warmup; ++i) {
+-        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
++        matmul_v4_do(blockDim, stream, aDev, bDev, cDev, tilingDev);
+     }
+     CHECK_ACL(aclrtSynchronizeStream(stream));
+ 
+@@ -76,7 +128,7 @@ int32_t main(int32_t argc, char **argv)
+     // launch 开销算进去；连续发射再取平均可以把这部分摊薄。
+     CHECK_ACL(aclrtRecordEvent(startEv, stream));
+     for (int it = 0; it < repeat; ++it) {
+-        matmul_v2_do(blockDim, stream, aDev, bDev, cDev);
++        matmul_v4_do(blockDim, stream, aDev, bDev, cDev, tilingDev);
+     }
+     CHECK_ACL(aclrtRecordEvent(endEv, stream));
+     CHECK_ACL(aclrtSynchronizeStream(stream)); // 只同步一次
+@@ -99,6 +151,7 @@ int32_t main(int32_t argc, char **argv)
+     CHECK_ACL(aclrtFree(aDev));
+     CHECK_ACL(aclrtFree(bDev));
+     CHECK_ACL(aclrtFree(cDev));
++    CHECK_ACL(aclrtFree(tilingDev));
+     CHECK_ACL(aclrtFreeHost(aHost));
+     CHECK_ACL(aclrtFreeHost(bHost));
+     CHECK_ACL(aclrtFreeHost(cHost));
+diff --git a/matmul_v4.cpp b/matmul_v4.cpp
+new file mode 100644
+index 0000000..90edbcd
+--- /dev/null
++++ b/matmul_v4.cpp
+@@ -0,0 +1,58 @@
++#include "kernel_operator.h"
++#include "lib/matmul_intf.h"
++
++using namespace AscendC;
++
++namespace {
++constexpr uint32_t M = 1024, N = 1024, K = 1024;
++constexpr int32_t kTilingInts = 256;   // TCubeTiling 字段总大小（int32 计）
++}
++
++// V4：AscendC::MatmulImpl（MDL 实现，非 KFC）。
++//
++// 为什么不用官方别名 AscendC::Matmul：
++//   在 __NPU_ARCH__==2201(910B) 上它映射到 KFC 模式的 MatmulClient，
++//   依赖 AIC(Server) + AIV(Client) 握手以及 system workspace。
++//   实测无论声明 KERNEL_TYPE_AIC_ONLY 还是 mix，进程都会死锁（timeout 124）。
++// 直接用 MatmulImpl + Init(&tiling, &pipe) 走 MDL 路径：无核间握手、不需要 workspace。
++extern "C" __global__ __aicore__ void matmul_v4(GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR tiling)
++{
++    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
++
++    using A_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
++    using B_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
++    using C_T = MatmulType<TPosition::GM, CubeFormat::ND, half>;
++
++    // 官方 API 内部会把 tiling 指针转成普通指针，直接传 __gm__ 指针编译不过。
++    // 等价于官方 GET_TILING_DATA：先把 tiling 从 GM 读进核内局部变量再传入。
++    AscendC::tiling::TCubeTiling tilingData;
++    {
++        GlobalTensor<int32_t> tGm;
++        tGm.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(tiling), kTilingInts);
++        int32_t *dst = reinterpret_cast<int32_t *>(&tilingData);
++        for (int32_t i = 0; i < kTilingInts; ++i) {
++            dst[i] = tGm.GetValue(i);
++        }
++    }
++
++    TPipe pipe;
++    AscendC::MatmulImpl<A_T, B_T, C_T, C_T> mm;
++    mm.Init(&tilingData, &pipe);
++
++    GlobalTensor<half> aGm, bGm, cGm;
++    aGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), M * K);
++    bGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), K * N);
++    cGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(c), M * N);
++
++    mm.SetTensorA(aGm);
++    mm.SetTensorB(bGm);
++    mm.IterateAll(cGm);
++}
++
++#ifndef ASCENDC_CPU_DEBUG
++void matmul_v4_do(uint32_t blockDim, void *stream, uint8_t *a, uint8_t *b, uint8_t *c,
++                  uint8_t *tiling)
++{
++    matmul_v4<<<blockDim, nullptr, stream>>>(a, b, c, tiling);
++}
++#endif

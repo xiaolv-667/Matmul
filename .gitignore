@@ -11,7 +11,9 @@ input/
 output/
 
 # ---- profiling / 仿真日志 ----
-prof/
+# 注意：必须写 /prof/（带前导斜杠）只忽略顶层原始采集目录，
+# 否则 docs/prof/ 里精选的 CSV 也会被一起忽略，面试官就看不到数据了。
+/prof/
 msprof*/
 sim_log/
 CAMODEL_LOG_PATH/

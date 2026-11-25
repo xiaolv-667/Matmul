@@ -70,3 +70,4 @@
 | 2026-11-25 15:08 | v5-multicore-3-g7db97cc-dirty | Ascend910B3/Release | 16 | 100 | 0.024494 | 87.6739 | 1.588e-05 | 1.00000012 | PASS |
 | 2026-11-25 15:08 | v5-multicore-3-g7db97cc-dirty | Ascend910B3/Release | 16 | 100 | 0.114004 | 150.6956 | 1.740e-05 | 1.00000000 | PASS |
 | 2026-11-25 15:08 | v5-multicore-3-g7db97cc-dirty | Ascend910B3/Release | 16 | 100 | 0.795324 | 172.8087 | 1.761e-05 | 1.00000000 | PASS |
+| 2026-11-25 15:44 | v5-multicore-4-ged6f389-dirty | Ascend910B3/Release | 16 | 100 | 0.024290 | 88.4095 | 1.588e-05 | 1.00000012 | PASS |

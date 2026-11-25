@@ -3,7 +3,16 @@ project(Ascend_c)
 
 set(RUN_MODE "npu" CACHE STRING "cpu/sim/npu")
 set(SOC_VERSION "Ascend910B3" CACHE STRING "system on chip type")
-set(ASCEND_CANN_PACKAGE_PATH "/home/developer/Ascend/cann-9.0.0"
+# CANN 安装路径：优先用环境变量，避免把某个人的本地路径写死在仓库里。
+# build.sh 会显式传 -DASCEND_CANN_PACKAGE_PATH，所以正常流程不受影响。
+if(DEFINED ENV{ASCEND_HOME_PATH} AND NOT "$ENV{ASCEND_HOME_PATH}" STREQUAL "")
+    set(_cann_default "$ENV{ASCEND_HOME_PATH}")
+elseif(EXISTS "$ENV{HOME}/Ascend/ascend-toolkit/latest")
+    set(_cann_default "$ENV{HOME}/Ascend/ascend-toolkit/latest")
+else()
+    set(_cann_default "/usr/local/Ascend/ascend-toolkit/latest")
+endif()
+set(ASCEND_CANN_PACKAGE_PATH "${_cann_default}"
     CACHE STRING "ASCEND CANN package installation directory"
 )
 if(NOT CMAKE_BUILD_TYPE)

@@ -1,0 +1,2 @@
+Op Name,Op Type,Task Duration(us),Block Dim,Mix Block Dim,Device Id,Pid,Current Freq,Rated Freq,
+matmul_v0_0,vector,5522.819824,40,NA,0,14719,1800,1800,
