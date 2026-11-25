@@ -11,12 +11,9 @@ constexpr uint32_t XH_ADDR = 0;                     // half[N]  2048 B
 constexpr uint32_t YH_ADDR = XH_ADDR + N * 2;       // half[N]  2048 B
 constexpr uint32_t XF_ADDR = YH_ADDR + N * 2;       // float[N] 4096 B
 constexpr uint32_t XT_ADDR = XF_ADDR + N * 4;       // float[N] 4096 B（归约 ping-pong）
-constexpr uint32_t XE_ADDR = XT_ADDR + N * 4;       // float[N] 4096 B（Exp 输出，避免就地）
+constexpr uint32_t XE_ADDR = XT_ADDR + N * 4;       // float[N] 4096 B（Exp 输出）
 // 共 16 KB，UB 有 192 KB，余量充足
 
-// ---- 行内归约：两个 buffer 交替做 dst/src，避免 dst 与 src 同 buffer 重叠 ----
-// 每次把后半段并进前半段，log2(N) 步完成。
-// dst 始终是「另一块」buffer，src0/src1 只读同一块的两个偏移，不存在写读重叠。
 // ---- 行内归约 ----
 // 两个 buffer 交替做 dst/src，避免 dst 与 src 同 buffer 重叠。
 //
@@ -24,7 +21,7 @@ constexpr uint32_t XE_ADDR = XT_ADDR + N * 4;       // float[N] 4096 B（Exp 输
 // fp32 下 32B = 8 个元素，所以 src[half] 这个偏移视图只有在 half 是 8 的倍数时合法。
 // 之前一路降到 stride=1/2/4（字节偏移 4/8/16）会直接触发
 // AIV 越界异常（plog: `[vector core exception] retCode=0x31`，aclError 507035）。
-// 因此向量归约只做到 stride >= 8，最后剩余 8 个元素在标量侧累加/取最大。
+// 因此向量归约只做到 stride >= 8，最后剩余 8 个元素在标量侧处理。
 constexpr uint32_t kAlignElems = 8;   // 32B / sizeof(float)
 
 __aicore__ inline float TreeReduceMax(AscendC::LocalTensor<float> &a,
@@ -87,9 +84,12 @@ __aicore__ inline float TreeReduceSum(AscendC::LocalTensor<float> &a,
 //   - 单核，40 个 AIV 只用了 1 个
 //   - 每遍 SetFlag/WaitFlag 全串行，搬运与计算零重叠
 //
-// 归约说明：AscendC 的 Level-2 ReduceMax/ReduceSum 在这套环境下会触发
-// AIV 异常（plog: `[vector core exception] retCode=0x31`，aclError 507035），
-// 放大 sharedTmpBuffer 到 64KB 也无效。因此改为显式树形归约，只用 Add/Max 原语。
+// 【本版最重要的一个坑】xHalf 被 MTE2 写入、被 Vector 读取，且每行要写三次。
+// 只加 MTE2_V（写→读）不够，还必须加 **V_MTE2（读→写）**：
+// 否则下一遍的 DataCopy 可能在上一遍 Cast 还在读 xHalf 时就把它覆盖掉。
+// 症状极具迷惑性：约 40% 的行出错、其余行完全正确，看起来像随机竞态而非逻辑错误。
+// 排查方式：把 pass3 简化成「读→转fp32→转回fp16→写」的纯拷贝，
+// 发现输出都不等于输入（610/1024 行正确），才定位到这条缺失的同步。
 extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
 {
     // 纯 Vector 算子，必须显式声明为 AIV-only，
@@ -115,6 +115,9 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::Cast(xF, xHalf, AscendC::RoundMode::CAST_NONE, N);
+        // 读完 xHalf 立刻反向上锁：保证后续 DataCopy 覆盖它之前，本遍的读已完成
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
         const float rowMax = TreeReduceMax(xF, xT, N);
 
         // ---------------- 第 2 遍：exp(x - max) 并求和 ----------------
@@ -122,6 +125,8 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::Cast(xF, xHalf, AscendC::RoundMode::CAST_NONE, N);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
         AscendC::Adds(xF, xF, -rowMax, N);
         AscendC::Exp(xE, xF, N);                        // 输出到独立 buffer，避免就地
         const float rowSum = TreeReduceSum(xE, xT, N);
@@ -131,6 +136,8 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
         AscendC::Cast(xF, xHalf, AscendC::RoundMode::CAST_NONE, N);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0);
         AscendC::Adds(xF, xF, -rowMax, N);
         AscendC::Exp(xE, xF, N);                        // exp 第二次计算（写到独立 buffer）
         AscendC::Muls(xF, xE, 1.0f / rowSum, N);
@@ -139,6 +146,7 @@ extern "C" __global__ __aicore__ void softmax_v0(GM_ADDR x, GM_ADDR y)
         AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID0);
         AscendC::DataCopy(yGm[i * N], yHalf, N);
+        // yHalf 被 MTE3 读过之后，下一行才允许 Vector 再次写它
         AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
     }
