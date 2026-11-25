@@ -26,7 +26,7 @@ endif()
 
 # 当前版本的 kernel 源文件（换版本时改这一行）
 file(GLOB KERNEL_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/softmax_v0.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/softmax_v1.cpp
 )
 
 set(CUSTOM_ASCEND310P_LIST "Ascend310P1" "Ascend310P3")

@@ -16,3 +16,4 @@
 | 时间 | 版本 | SOC/构建类型 | blockDim | repeat | avg_ms | eff_bw_gbs | fro_err | cos | 结果 |
 |------|------|--------------|----------|--------|--------|-----------|---------|-----|------|
 | 2026-11-25 16:30 | softmax@v5-multicore-9-g2014adf-dirty | Ascend910B3/Release | 1 | 100 | 0.861923 | 4.87 | 1.061e-05 | 0.99999991 | PASS |
+| 2026-11-25 16:31 | softmax@v5-multicore-10-gd8b64e2-dirty | Ascend910B3/Release | 40 | 100 | 0.025499 | 164.49 | 1.061e-05 | 0.99999991 | PASS |
