@@ -25,13 +25,16 @@ void ComputeTiling(AscendC::tiling::TCubeTiling &tiling)
                  matmul_tiling::DataType::DT_FLOAT16, false);
     api.SetCType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
                  matmul_tiling::DataType::DT_FLOAT16);
+    // 多核尝试结论（已实测，失败）：
+    //   1) SetShape(256,256,1024) -> singleCoreM/N 变 256，但 usedCoreNum 仍为 1，
+    //      只算 1/16 输出，cos=0.2518（正好 = 1/sqrt(16)）。
+    //   2) 再手动 tiling.usedCoreNum=16 -> 仍是 cos=0.2518，说明 16 个核算的是同一块。
+    // 即本 CANN 版本的 MatmulApiTiling 不支持 host 侧核数切分（无 SetDim/SetSingleShape）。
+    // 因此回到单核形状，保证结果正确。
     api.SetShape(1024, 1024, 1024);
     api.SetOrgShape(1024, 1024, 1024);
     api.SetBias(false);
-    // 注意：本 CANN 版本的 MatmulApiTiling 没有 SetDim / SetSingleShape /
-    // MultiCoreMatmulTiling，无法从 host 指定核数切分，生成器固定给单核
-    // （usedCoreNum=1, singleCoreM/N=1024）。多核需要换用带核间切分的 tiling 方案。
-    // 这里只打开 L1 的 A/B 双缓冲。
+    // L1 的 A/B 双缓冲
     api.SetDoubleBuffer(true, true, false, false);
     // 扫参结论：手动钉 base 尺寸反而更慢，交回生成器自动选择。
     //   base=128/128/128（SetFixSplit 固定）: 237.6 us / 9.04 TFLOPS
