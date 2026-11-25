@@ -49,6 +49,36 @@ def bench(size, iters, dtype=torch.float16):
     return tflops
 
 
+def bench_softmax(m, n, iters, dtype=torch.float16):
+    """官方 Softmax（aclnnSoftmax，经 torch.softmax）对照。
+
+    口径与本项目 softmax 子项目一致：
+      - 沿最后一维做 softmax
+      - 必要流量 = 读 1 次 + 写 1 次 = 2*m*n*2 字节
+      - device 侧 Event 计时
+    """
+    x = torch.randn(m, n, dtype=dtype, device="npu")
+
+    for _ in range(5):
+        torch.softmax(x, dim=-1)
+    torch.npu.synchronize()
+
+    start = torch.npu.Event(enable_timing=True)
+    end = torch.npu.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        y = torch.softmax(x, dim=-1)
+    end.record()
+    torch.npu.synchronize()
+
+    ms = start.elapsed_time(end) / iters
+    min_bytes = 2.0 * m * n * 2.0            # 读 + 写
+    bw = min_bytes / (ms * 1e-3) / 1e9       # GB/s
+    print(f"  softmax {m}x{n}  {ms * 1000:8.2f} us  eff_bw={bw:8.2f} GB/s")
+    del x, y
+    return bw
+
+
 def main():
     print("=== CANN 官方 Matmul（aclnn via torch_npu）===")
     print(f"torch {torch.__version__} / torch_npu {torch.npu.get_device_name(0)}")
@@ -62,6 +92,15 @@ def main():
     print("[大尺寸：寻找官方实现的吞吐上限]")
     for s in (2048, 4096, 8192):
         bench(s, 50 if s <= 4096 else 20)
+
+    print("")
+    print("=== CANN 官方 Softmax（aclnn via torch_npu）===")
+    print("[同口径对比] 1024x1024 fp16，沿最后一维")
+    bench_softmax(1024, 1024, 200)
+    print("")
+    print("[大尺寸]")
+    for s in (2048, 4096):
+        bench_softmax(s, s, 100)
 
 
 if __name__ == "__main__":
